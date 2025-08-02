@@ -1,76 +1,67 @@
 const express = require('express');
 const multer = require('multer');
-const fs = require('fs');
 const path = require('path');
-const ConvertAPI = require('convertapi')('CEph3V3dCuW2qAeSaYgAe9FeVW2zzPgZ'); // Replace with your secret
+const fs = require('fs');
+const { exec } = require('child_process');
 
 const app = express();
-const port = 3000;
+const UPLOADS = path.join(__dirname, 'uploads');
 
-// Create uploads folder if not exists
-if (!fs.existsSync('uploads')) {
-  fs.mkdirSync('uploads');
-}
+// 🔹 Update this path if needed
+const sofficePath = `"C:\\Program Files\\LibreOffice\\program\\soffice.exe"`;
 
-// File upload config
-const upload = multer({ dest: 'uploads/' });
+// Make sure uploads folder exists
+if (!fs.existsSync(UPLOADS)) fs.mkdirSync(UPLOADS);
 
-// Convert Function using ConvertAPI
-async function convertXlsToXlsx(inputPath, outputPath) {
-  try {
-    const result = await ConvertAPI.convert('xlsx', {
-      File: inputPath
-    }, 'xls');
+// Multer setup
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, UPLOADS),
+  filename: (req, file, cb) => cb(null, `temp-${Date.now()}${path.extname(file.originalname)}`)
+});
 
-    await result.file.save(outputPath);
-    console.log(`✅ File converted to: ${outputPath}`);
-    return true;
-  } catch (error) {
-    console.error('❌ Conversion failed:', error.message);
-    return false;
-  }
-}
-
-// Upload Route
-app.post('/upload', upload.single('file'), async (req, res) => {
-  if (!req.file) {
-    return res.status(400).send('❌ No file uploaded.');
-  }
-
-  const filePath = req.file.path;
-  const originalName = req.file.originalname;
-  const ext = path.extname(originalName).toLowerCase();
-
-  if (ext !== '.xls') {
-    fs.unlinkSync(filePath);
-    return res.status(400).send('❌ Only .xls files are allowed.');
-  }
-
-  // ✅ Rename uploaded file with .xls extension
-  const renamedPath = `${filePath}.xls`;
-  fs.renameSync(filePath, renamedPath);
-
-  const outputFilename = `converted-${Date.now()}.xlsx`;
-  const outputFilePath = path.join(__dirname, 'uploads', outputFilename);
-
-  const success = await convertXlsToXlsx(renamedPath, outputFilePath);
-  fs.unlinkSync(renamedPath); // remove uploaded .xls
-
-  if (success) {
-    res.json({
-      message: '✅ File converted!',
-      downloadUrl: `/uploads/${outputFilename}`
-    });
-  } else {
-    res.status(500).send('❌ Conversion failed.');
+const upload = multer({
+  storage,
+  fileFilter: (req, file, cb) => {
+    const ext = path.extname(file.originalname).toLowerCase();
+    if (ext === '.xls') cb(null, true);
+    else cb(new Error('Only .xls files are allowed'));
   }
 });
 
+// Route: Upload and Convert
+app.post('/upload', upload.single('file'), (req, res) => {
+  const inputFile = req.file.path;
+  const baseFileName = path.basename(inputFile, path.extname(inputFile));
+  const expectedConverted = path.join(UPLOADS, `${baseFileName}.xlsx`);
+  const finalOutputFile = path.join(UPLOADS, `converted-${Date.now()}.xlsx`);
 
-// Serve converted files
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+  const command = `${sofficePath} --headless --convert-to "xlsx:Calc MS Excel 2007 XML" --outdir "${UPLOADS}" "${inputFile}"`;
 
-// Start server
-app.listen(port, () => {
-  console.log(`🚀 Server running at http://localhost:${port}`);
+  console.log(`Executing command: ${command}`);
+
+  exec(command, (err, stdout, stderr) => {
+    if (err || stderr) {
+      console.error('❌ Conversion error:', stderr || err.message);
+      return res.status(500).send('❌ Conversion failed.');
+    }
+
+    // Cleanup original
+    if (fs.existsSync(inputFile)) fs.unlinkSync(inputFile);
+
+    // Wait briefly to ensure file is written
+    setTimeout(() => {
+      if (!fs.existsSync(expectedConverted)) {
+        return res.status(500).send('❌ Converted file not found.');
+      }
+
+      // Rename to timestamped file
+      fs.renameSync(expectedConverted, finalOutputFile);
+
+      res.status(200).send(`✅ Converted to: ${finalOutputFile}`);
+    }, 500); // wait for LibreOffice to finish writing file
+  });
+});
+
+app.listen(3000, () => {
+  console.log('🚀 Server running at http://localhost:3000');
 });
